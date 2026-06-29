@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. جلب الك code من المستودع
+    # 1. جلب الكود من المستودع
     - name: Checkout the code
       uses: actions/checkout@v4
 
@@ -22,15 +22,25 @@ jobs:
         java-version: '17'
         distribution: 'zulu'
 
-    # 3. إعداد أداة Gradle الرسمية داخل السيرفر تلقائياً
+    # 3. إعداد أداة Gradle الرسمية
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
 
-    # 4. بناء التطبيق باستخدام أمر غردل العام (دون الحاجة لملف gradlew)
+    # 4. الانتقال الذكي لمجلد المشروع الحقيقي وبناء الـ APK
     - name: Build Debug APK
-      run: gradle assembleDebug
+      run: |
+        # البحث عن المجلد الذي يحتوي على إعدادات الـ gradle والدخول إليه
+        SETTINGS_PATH=$(find . -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
+        if [ -z "$SETTINGS_PATH" ]; then
+          echo "Error: Android project configuration (settings.gradle) not found!"
+          exit 1
+        fi
+        PROJECT_DIR=$(dirname "$SETTINGS_PATH")
+        echo "Found Android project in: $PROJECT_DIR"
+        cd $PROJECT_DIR
+        gradle assembleDebug
 
-    # 5. رفع ملف الـ APK الناتج كـ Artifact
+    # 5. رفع ملف الـ APK الناتج كـ Artifact (يبحث في كل المجلدات)
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
