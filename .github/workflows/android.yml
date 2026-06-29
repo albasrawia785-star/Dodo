@@ -26,24 +26,6 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
 
-    # 4. الانتقال الذكي لمجلد المشروع الحقيقي وبناء الـ APK
+    # 4. بناء الـ APK من المجلد الرئيسي للمستودع مباشرة
     - name: Build Debug APK
-      run: |
-        # البحث عن المجلد الذي يحتوي على إعدادات الـ gradle والدخول إليه
-        SETTINGS_PATH=$(find . -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
-        if [ -z "$SETTINGS_PATH" ]; then
-          echo "Error: Android project configuration (settings.gradle) not found!"
-          exit 1
-        fi
-        PROJECT_DIR=$(dirname "$SETTINGS_PATH")
-        echo "Found Android project in: $PROJECT_DIR"
-        cd $PROJECT_DIR
-        gradle assembleDebug
-
-    # 5. رفع ملف الـ APK الناتج كـ Artifact (يبحث في كل المجلدات)
-    - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: pharmacy-app-debug-apk
-        path: |
-          **/build/outputs/apk/debug/*-debug.apk
+      run: gradle assembleDebug
