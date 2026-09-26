@@ -22,41 +22,50 @@ jobs:
           java-version: '17'
           distribution: 'zulu'
 
-      # 3. فك ضغط ملف المشروع (في حال تم رفعه كـ ZIP)
-      - name: Extract Project Zip (If Exists)
+      # 3. فك ضغط أي ملفات مضغوطة وإظهار هيكلية المجلدات
+      - name: Prepare Project Workspace
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          echo "🔍 فحص المحتويات الحالية في المستودع..."
+          ls -la
+          
+          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
           if [ -n "$ZIP_FILE" ]; then
             echo "📦 تم العثور على ملف مضغوط: $ZIP_FILE، جاري فك الضغط..."
             unzip -o "$ZIP_FILE" -d .
-          else
-            echo "📁 لم يتم العثور على ملفات ZIP، سيتم استخدام كود المستودع المباشر."
           fi
 
-      # 4. بناء وتوقيع ملف الـ Release APK
+      # 4. البحث عن المشروع وبناؤه
       - name: Build and Sign Release APK
         env:
           _JAVA_OPTIONS: "-Djava.awt.headless=true"
           GRADLE_OPTS: "-Djava.awt.headless=true -Dorg.gradle.jvmargs=-Xmx2048m"
         run: |
-          SETTINGS_FILE=$(find . -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
+          # البحث عن settings.gradle أو build.gradle لتحديد مجلد أندرويد
+          SETTINGS_FILE=$(find . -name "settings.gradle*" -o -name "build.gradle*" | head -n 1)
+          
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد (settings.gradle)!"
+            echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد! يرجى التأكد من رفع ملفات المشروع كاملة."
             exit 1
           fi
 
+          # الانتقال لمجلد المشروع الذي يحتوي على الإعدادات
           TARGET_DIR=$(dirname "$SETTINGS_FILE")
-          echo "📁 تم العثور على مسار المشروع: $TARGET_DIR"
+          # إذا كان الملف داخل مجلد app، نرجع للمجلد الرئيسي للمشروع
+          if [ "$(basename "$TARGET_DIR")" = "app" ]; then
+            TARGET_DIR=$(dirname "$TARGET_DIR")
+          fi
+
+          echo "📁 تم تحديد مسار المشروع: $TARGET_DIR"
           cd "$TARGET_DIR"
-          
-          echo "🛠️ 1. تجهيز الـ Gradle Wrapper وتصاريح التشغيل..."
+
+          echo "🛠️ 1. تجهيز Gradle Wrapper..."
           gradle wrapper --gradle-version 8.2
           chmod +x gradlew
 
-          echo "🔍 2. التحقق من وجود ملف Keystore في المشروع..."
+          echo "🔍 2. التحقق من وجود مفتاح التوقيع (Keystore)..."
           KEYSTORE_PATH=$(find . -name "*.jks" -o -name "*.keystore" | head -n 1)
           if [ -z "$KEYSTORE_PATH" ]; then
-            echo "⚠️ لم يتم العثور على مفتاح جاهز، سيتم إنشاء مفتاح مؤقت للإنشاء..."
+            echo "⚠️ لم يتم العثور على مفتاح جاهز، سيتم إنشاء مفتاح افتراضي..."
             keytool -genkey -v -keystore my-upload-key.jks \
               -alias key0 -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass "android" -keypass "android" \
@@ -92,7 +101,7 @@ jobs:
           }
           EOF
 
-          echo "🚀 4. تنفيذ بناء نسخة الـ Release الموقعة..."
+          echo "🚀 4. بدء عملية البناء..."
           ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file=$(pwd)/$KEYSTORE_PATH \
             -Pandroid.injected.signing.store.password=android \
@@ -102,7 +111,7 @@ jobs:
 
           echo "✅ تم البناء والتوقيع بنجاح!"
 
-      # 5. رفع ملف الـ APK النهائي كـ Artifact قابل للتنزيل
+      # 5. رفع ملف الـ APK النهائي
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
