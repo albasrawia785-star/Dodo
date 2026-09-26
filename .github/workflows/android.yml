@@ -25,14 +25,12 @@ jobs:
       # 3. فك ضغط ملف المشروع (في حال تم رفعه كـ ZIP)
       - name: Extract Project Zip (If Exists)
         run: |
-          mkdir -p project_dir
           ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
           if [ -n "$ZIP_FILE" ]; then
             echo "📦 تم العثور على ملف مضغوط: $ZIP_FILE، جاري فك الضغط..."
-            unzip -o "$ZIP_FILE" -d project_dir
+            unzip -o "$ZIP_FILE" -d .
           else
-            echo "📁 لم يتم العثور على ملفات ZIP، سيتم استخدام الكود الموجود في المستودع مباشرة."
-            cp -r . project_dir 2>/dev/null || true
+            echo "📁 لم يتم العثور على ملفات ZIP، سيتم استخدام كود المستودع المباشر."
           fi
 
       # 4. بناء وتوقيع ملف الـ Release APK
@@ -41,33 +39,34 @@ jobs:
           _JAVA_OPTIONS: "-Djava.awt.headless=true"
           GRADLE_OPTS: "-Djava.awt.headless=true -Dorg.gradle.jvmargs=-Xmx2048m"
         run: |
-          # البحث عن مجلد إعدادات أندرويد الأساسي
-          TARGET_DIR=$(find project_dir -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1 | xargs dirname)
-          if [ -z "$TARGET_DIR" ]; then
+          SETTINGS_FILE=$(find . -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
+          if [ -z "$SETTINGS_FILE" ]; then
             echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد (settings.gradle)!"
             exit 1
           fi
+
+          TARGET_DIR=$(dirname "$SETTINGS_FILE")
+          echo "📁 تم العثور على مسار المشروع: $TARGET_DIR"
           cd "$TARGET_DIR"
           
           echo "🛠️ 1. تجهيز الـ Gradle Wrapper وتصاريح التشغيل..."
           gradle wrapper --gradle-version 8.2
           chmod +x gradlew
 
-          echo "🛠️ 2. إنشاء مفتاح التوقيع الرقمي (Keystore)..."
-          keytool -genkey -v -keystore my-upload-key.jks \
-            -alias key0 \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "android" \
-            -keypass "android" \
-            -dname "CN=Online App, OU=Dev, O=App, L=Basra, C=IQ"
+          echo "🔍 2. التحقق من وجود ملف Keystore في المشروع..."
+          KEYSTORE_PATH=$(find . -name "*.jks" -o -name "*.keystore" | head -n 1)
+          if [ -z "$KEYSTORE_PATH" ]; then
+            echo "⚠️ لم يتم العثور على مفتاح جاهز، سيتم إنشاء مفتاح مؤقت للإنشاء..."
+            keytool -genkey -v -keystore my-upload-key.jks \
+              -alias key0 -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "android" -keypass "android" \
+              -dname "CN=Online App, OU=Dev, O=App, L=Basra, C=IQ"
+            KEYSTORE_PATH="my-upload-key.jks"
+          else
+            echo "🔑 تم العثور على الملف: $KEYSTORE_PATH"
+          fi
 
-          echo "🛠️ 3. كتابة خواص التوقيع في ملف gradle.properties..."
-          echo "MYAPP_RELEASE_STORE_FILE=my-upload-key.jks" >> gradle.properties
-          echo "MYAPP_RELEASE_STORE_PASSWORD=android" >> gradle.properties
-          echo "MYAPP_RELEASE_KEY_ALIAS=key0" >> gradle.properties
-          echo "MYAPP_RELEASE_KEY_PASSWORD=android" >> gradle.properties
-
-          echo "🛠️ 4. إنشاء ملف google-services.json تلقائياً..."
+          echo "🛠️ 3. إنشاء ملف google-services.json..."
           mkdir -p app
           cat <<EOF > app/google-services.json
           {
@@ -93,9 +92,9 @@ jobs:
           }
           EOF
 
-          echo "🚀 5. تنفيذ بناء نسخة الـ Release الموقعة..."
+          echo "🚀 4. تنفيذ بناء نسخة الـ Release الموقعة..."
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$(pwd)/my-upload-key.jks \
+            -Pandroid.injected.signing.store.file=$(pwd)/$KEYSTORE_PATH \
             -Pandroid.injected.signing.store.password=android \
             -Pandroid.injected.signing.key.alias=key0 \
             -Pandroid.injected.signing.key.password=android \
@@ -108,4 +107,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DebtTracker-Online-Release-APK
-          path: project_dir/**/build/outputs/apk/release/*.apk
+          path: "**/build/outputs/apk/release/*.apk"
