@@ -22,50 +22,50 @@ jobs:
           java-version: '17'
           distribution: 'zulu'
 
-      # 3. فك ضغط أي ملفات مضغوطة وإظهار هيكلية المجلدات
-      - name: Prepare Project Workspace
+      # 3. فك ضغط الملف المضغوط في مجلد مخصص
+      - name: Extract Project Zip
         run: |
-          echo "🔍 فحص المحتويات الحالية في المستودع..."
-          ls -la
-          
-          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
+          mkdir -p extracted_project
+          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
           if [ -n "$ZIP_FILE" ]; then
-            echo "📦 تم العثور على ملف مضغوط: $ZIP_FILE، جاري فك الضغط..."
-            unzip -o "$ZIP_FILE" -d .
+            echo "📦 تم العثور على الملف المضغوط: $ZIP_FILE، جاري فك الضغط..."
+            unzip -o "$ZIP_FILE" -d extracted_project
+          else
+            echo "📁 لم يتم العثور على ملف ZIP، سيتم النسخ المباشر..."
+            cp -r . extracted_project/ 2>/dev/null || true
           fi
 
-      # 4. البحث عن المشروع وبناؤه
+      # 4. بناء وتوقيع ملف الـ Release APK
       - name: Build and Sign Release APK
         env:
           _JAVA_OPTIONS: "-Djava.awt.headless=true"
           GRADLE_OPTS: "-Djava.awt.headless=true -Dorg.gradle.jvmargs=-Xmx2048m"
         run: |
-          # البحث عن settings.gradle أو build.gradle لتحديد مجلد أندرويد
-          SETTINGS_FILE=$(find . -name "settings.gradle*" -o -name "build.gradle*" | head -n 1)
+          # البحث عن ملفات إعدادات أندرويد داخل المجلد المفكوك
+          SETTINGS_FILE=$(find extracted_project -name "settings.gradle.kts" -o -name "settings.gradle" -o -name "build.gradle*" | head -n 1)
           
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد! يرجى التأكد من رفع ملفات المشروع كاملة."
+            echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد داخل الأرشيف المضغوط!"
             exit 1
           fi
 
-          # الانتقال لمجلد المشروع الذي يحتوي على الإعدادات
+          # تحديد المجلد الرئيسي للمشروع
           TARGET_DIR=$(dirname "$SETTINGS_FILE")
-          # إذا كان الملف داخل مجلد app، نرجع للمجلد الرئيسي للمشروع
           if [ "$(basename "$TARGET_DIR")" = "app" ]; then
             TARGET_DIR=$(dirname "$TARGET_DIR")
           fi
 
-          echo "📁 تم تحديد مسار المشروع: $TARGET_DIR"
+          echo "📁 تم العثور على مشروع أندرويد في المسار: $TARGET_DIR"
           cd "$TARGET_DIR"
 
-          echo "🛠️ 1. تجهيز Gradle Wrapper..."
+          echo "🛠️ 1. تجهيز Gradle Wrapper وتصاريح التشغيل..."
           gradle wrapper --gradle-version 8.2
           chmod +x gradlew
 
-          echo "🔍 2. التحقق من وجود مفتاح التوقيع (Keystore)..."
+          echo "🔍 2. البحث عن مفتاح التوقيع (Keystore)..."
           KEYSTORE_PATH=$(find . -name "*.jks" -o -name "*.keystore" | head -n 1)
           if [ -z "$KEYSTORE_PATH" ]; then
-            echo "⚠️ لم يتم العثور على مفتاح جاهز، سيتم إنشاء مفتاح افتراضي..."
+            echo "⚠️ لم يتم العثور على مفتاح جاهز، جاري إنشاء مفتاح افتراضي..."
             keytool -genkey -v -keystore my-upload-key.jks \
               -alias key0 -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass "android" -keypass "android" \
@@ -101,7 +101,7 @@ jobs:
           }
           EOF
 
-          echo "🚀 4. بدء عملية البناء..."
+          echo "🚀 4. بدء بناء نسخة الـ Release الموقعة..."
           ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file=$(pwd)/$KEYSTORE_PATH \
             -Pandroid.injected.signing.store.password=android \
@@ -116,4 +116,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DebtTracker-Online-Release-APK
-          path: "**/build/outputs/apk/release/*.apk"
+          path: "extracted_project/**/build/outputs/apk/release/*.apk"
