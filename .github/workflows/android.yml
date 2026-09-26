@@ -1,10 +1,10 @@
-name: Build Android APK with Persistent Signing
+name: Build Online Android APK
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
@@ -12,107 +12,100 @@ jobs:
 
     steps:
       # 1. سحب الكود من المستودع
-      - name: Checkout Source Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. تنظيف الإعدادات المتعارضة السابقة
-      - name: Pre-Clean Conflicting Configurations
-        run: |
-          rm -rf capacitor.config.ts capacitor.config.json
-
-      # 3. فك ضغط ملفات المشروع في حال وجود ملف zip
-      - name: Unzip Project Files If Needed
-        run: |
-          if ls *.zip 1> /dev/null 2>&1; then
-            unzip *.zip -d temp_unzip 2>/dev/null || true
-            TARGET_DIR=$(find temp_unzip -name "package.json" -exec dirname {} \; | head -n 1)
-            if [ -n "$TARGET_DIR" ]; then
-              echo "Found project files in: $TARGET_DIR"
-              cp -r $TARGET_DIR/* .
-            fi
-            rm -rf temp_unzip
-          fi
-
-      # 4. إعداد بيئة Node.js
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      # 5. تثبيت حزم وباقات Node
-      - name: Install Dependencies
-        run: npm install --force
-
-      # 6. بناء تطبيق React لإنتاج ملفات dist
-      - name: Build Web Application
-        run: npm run build
-
-      # 7. تثبيت إضافة Capacitor الخاصة بنظام أندرويد
-      - name: Install Native Capacitor Plugins
-        run: |
-          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest @capacitor/splash-screen@latest @capacitor/haptics@latest @capacitor-community/sqlite@latest
-
-      # 8. تحويل React إلى مشروع أندرويد (تم تغيير اسم الحزمة لتخطي الحظر)
-      - name: Initialize Capacitor Android
-        run: |
-          APP_NAME="دفتر الديون"
-          PACKAGE_ID="iq.daftar.aldeyon"
-          npx cap init "$APP_NAME" "$PACKAGE_ID" --web-dir=dist
-          npx cap add android
-          npx cap sync android
-
-      # 9. إعداد بيئة Java 21
-      - name: Set up JDK 21
+      # 2. إعداد بيئة جافا (JDK 17)
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
+          java-version: '17'
           distribution: 'zulu'
-          java-version: '21'
 
-      # 10. بناء وتوقيع ملف الـ APK المباشر عبر Gradle
-      - name: Build and Sign Release APK via Gradle
+      # 3. فك ضغط ملف المشروع (في حال تم رفعه كـ ZIP)
+      - name: Extract Project Zip (If Exists)
         run: |
-          cd android
-          chmod +x gradlew
-
-          # استخدام المفتاح الثابت المرفق في المشروع
-          if [ -f "../daftar_release.keystore" ]; then
-            cp ../daftar_release.keystore release.keystore
-            echo "✅ تم العثور على المفتاح الثابت: daftar_release.keystore"
-          elif [ -f "../release.keystore" ]; then
-            cp ../release.keystore release.keystore
-            echo "✅ تم العثور على المفتاح الثابت: release.keystore"
+          mkdir -p project_dir
+          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "📦 تم العثور على ملف مضغوط: $ZIP_FILE، جاري فك الضغط..."
+            unzip -o "$ZIP_FILE" -d project_dir
           else
-            echo "⚠️ لم يتم العثور على مفتاح ثابت، جاري إنشاء مفتاح جديد..."
-            keytool -genkeypair -v -keystore release.keystore -alias daftar_key -keyalg RSA -keysize 2048 -validity 10000 -storepass "DaftarPass2026" -keypass "DaftarPass2026" -dname "CN=Daftar, OU=Dev, O=Daftar, L=Basra, C=IQ" -storetype PKCS12
+            echo "📁 لم يتم العثور على ملفات ZIP، سيتم استخدام الكود الموجود في المستودع مباشرة."
+            cp -r . project_dir 2>/dev/null || true
           fi
 
-          # كتابة بيانات التوقيع داخل gradle.properties
-          echo "MYAPP_RELEASE_STORE_FILE=release.keystore" >> gradle.properties
-          echo "MYAPP_RELEASE_STORE_PASSWORD=DaftarPass2026" >> gradle.properties
-          echo "MYAPP_RELEASE_KEY_ALIAS=daftar_key" >> gradle.properties
-          echo "MYAPP_RELEASE_KEY_PASSWORD=DaftarPass2026" >> gradle.properties
+      # 4. بناء وتوقيع ملف الـ Release APK
+      - name: Build and Sign Release APK
+        env:
+          _JAVA_OPTIONS: "-Djava.awt.headless=true"
+          GRADLE_OPTS: "-Djava.awt.headless=true -Dorg.gradle.jvmargs=-Xmx2048m"
+        run: |
+          # البحث عن مجلد إعدادات أندرويد الأساسي
+          TARGET_DIR=$(find project_dir -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1 | xargs dirname)
+          if [ -z "$TARGET_DIR" ]; then
+            echo "❌ خطأ: لم يتم العثور على ملفات مشروع أندرويد (settings.gradle)!"
+            exit 1
+          fi
+          cd "$TARGET_DIR"
+          
+          echo "🛠️ 1. تجهيز الـ Gradle Wrapper وتصاريح التشغيل..."
+          gradle wrapper --gradle-version 8.2
+          chmod +x gradlew
 
-          RUN_NUM=${{ github.run_number }}
-          DATE_STR=$(date +'%Y-%m-%d')
-          FINAL_APK_NAME="Daftar-Aldeyon-${DATE_STR}-v${RUN_NUM}.apk"
+          echo "🛠️ 2. إنشاء مفتاح التوقيع الرقمي (Keystore)..."
+          keytool -genkey -v -keystore my-upload-key.jks \
+            -alias key0 \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "android" \
+            -keypass "android" \
+            -dname "CN=Online App, OU=Dev, O=App, L=Basra, C=IQ"
 
-          # تنفيذ البناء وتوليد التوقيع ببروتوكولات أندرويد V1 و V2 المعتمدة
+          echo "🛠️ 3. كتابة خواص التوقيع في ملف gradle.properties..."
+          echo "MYAPP_RELEASE_STORE_FILE=my-upload-key.jks" >> gradle.properties
+          echo "MYAPP_RELEASE_STORE_PASSWORD=android" >> gradle.properties
+          echo "MYAPP_RELEASE_KEY_ALIAS=key0" >> gradle.properties
+          echo "MYAPP_RELEASE_KEY_PASSWORD=android" >> gradle.properties
+
+          echo "🛠️ 4. إنشاء ملف google-services.json تلقائياً..."
+          mkdir -p app
+          cat <<EOF > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "123456789",
+              "project_id": "debt-tracker-online"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789:android:123456",
+                  "android_client_info": {
+                    "package_name": "com.aistudio.debttracker.iqdb"
+                  }
+                },
+                "api_key": [
+                  {
+                    "current_key": "mock_api_key_here"
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          echo "🚀 5. تنفيذ بناء نسخة الـ Release الموقعة..."
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$(pwd)/release.keystore \
-            -Pandroid.injected.signing.store.password=DaftarPass2026 \
-            -Pandroid.injected.signing.key.alias=daftar_key \
-            -Pandroid.injected.signing.key.password=DaftarPass2026 \
-            -Pandroid.injected.signing.v1-signing-enabled=true \
-            -Pandroid.injected.signing.v2-signing-enabled=true \
-            --no-daemon
+            -Pandroid.injected.signing.store.file=$(pwd)/my-upload-key.jks \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=key0 \
+            -Pandroid.injected.signing.key.password=android \
+            --no-daemon --stacktrace
 
-          # تجهيز الملف النهائي ونقله لمسار المخرجات
-          mkdir -p app/build/outputs/apk/release/final/
-          cp app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/final/${FINAL_APK_NAME}
+          echo "✅ تم البناء والتوقيع بنجاح!"
 
-      # 11. رفع ملف الـ APK النظيف والجاهز للتحميل
-      - name: Upload Signed APK
+      # 5. رفع ملف الـ APK النهائي كـ Artifact قابل للتنزيل
+      - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Daftar-Aldeyon-APK
-          path: android/app/build/outputs/apk/release/final/*.apk
+          name: DebtTracker-Online-Release-APK
+          path: project_dir/**/build/outputs/apk/release/*.apk
