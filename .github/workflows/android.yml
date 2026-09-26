@@ -39,25 +39,24 @@ jobs:
             cp -r . extracted_project/ 2>/dev/null || true
           fi
 
-      # 4. تثبيت الحزم وبناء تطبيق الويب (Vite Build)
+      # 4. تثبيت الحزم وبناء مشروع الويب
       - name: Install Dependencies & Build Web Project
         run: |
           cd extracted_project
           npm install
           npm run build || npx vite build
 
-      # 5. إعداد وتغليف أندرويد وتكافؤ التبعيات
-      - name: Setup Android Platform & Fix Duplicate Classes
+      # 5. إعداد أندرويد وبناء ملف APK غير موقع ثم توقيعه بمفتاح جديد
+      - name: Setup Android Platform & Build APK
         run: |
           cd extracted_project
           
-          # إضافة إطار عمل أندرويد إن لم يكن موجوداً
           npm install @capacitor/core @capacitor/cli @capacitor/android
           npx cap init "DebtTracker" "com.aistudio.debttracker" --web-dir dist || true
           npx cap add android || true
           npx cap sync android
 
-          # إصلاح تعارض كلاسات Kotlin المكررة في Gradle
+          # حل تعارض مكتبات Kotlin
           cat << 'EOF' >> android/build.gradle
 
           subprojects {
@@ -70,26 +69,21 @@ jobs:
           }
           EOF
 
-          # الانتقال لمجلد أندرويد وإعطاء الصلاحيات
+          # إنشاء مفتاح توقيع جديد بكلمة سر معروفة
+          keytool -genkey -v -keystore auto_generated.keystore -storepass android -alias key0 -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android, OU=Dev, O=App, L=City, S=State, C=US"
+
           cd android
           chmod +x gradlew
 
-          # البحث عن ملف الـ Keystore الخاص بك
-          KEYSTORE_PATH=$(find .. -name "daftar_release.keystore" -o -name "*.keystore" -o -name "*.jks" | head -n 1)
-          
-          if [ -n "$KEYSTORE_PATH" ]; then
-            echo "🔑 تم استخدام مفتاح التوقيع الخاص بك: $KEYSTORE_PATH"
-            ./gradlew assembleRelease \
-              -Pandroid.injected.signing.store.file=$(pwd)/$KEYSTORE_PATH \
-              -Pandroid.injected.signing.store.password=android \
-              -Pandroid.injected.signing.key.alias=key0 \
-              -Pandroid.injected.signing.key.password=android \
-              --no-daemon
-          else
-            ./gradlew assembleRelease --no-daemon
-          fi
+          # البناء مع التوقيع بالمفتاح الجديد
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$(pwd)/../auto_generated.keystore \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=key0 \
+            -Pandroid.injected.signing.key.password=android \
+            --no-daemon
 
-      # 6. رفع ملف الـ APK الناتجة
+      # 6. رفع ملف الـ APK
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
