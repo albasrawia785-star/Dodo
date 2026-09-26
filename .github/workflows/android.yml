@@ -52,16 +52,16 @@ jobs:
         run: |
           npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest @capacitor/splash-screen@latest @capacitor/haptics@latest @capacitor-community/sqlite@latest
 
-      # 8. تحويل React إلى مشروع أندرويد
+      # 8. تحويل React إلى مشروع أندرويد (تم تغيير اسم الحزمة لتخطي الحظر)
       - name: Initialize Capacitor Android
         run: |
           APP_NAME="دفتر الديون"
-          PACKAGE_ID="com.daftar.aldeyon"
+          PACKAGE_ID="iq.daftar.aldeyon"
           npx cap init "$APP_NAME" "$PACKAGE_ID" --web-dir=dist
           npx cap add android
           npx cap sync android
 
-      # 9. إعداد بيئة Java 21 لتتوافق مع متطلبات Capacitor
+      # 9. إعداد بيئة Java 21
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
