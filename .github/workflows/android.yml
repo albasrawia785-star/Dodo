@@ -46,8 +46,8 @@ jobs:
           npm install
           npm run build || npx vite build
 
-      # 5. إعداد وتغليف أندرويد بواسطة Capacitor
-      - name: Setup Android Platform & Build APK
+      # 5. إعداد وتغليف أندرويد وتكافؤ التبعيات
+      - name: Setup Android Platform & Fix Duplicate Classes
         run: |
           cd extracted_project
           
@@ -56,6 +56,19 @@ jobs:
           npx cap init "DebtTracker" "com.aistudio.debttracker" --web-dir dist || true
           npx cap add android || true
           npx cap sync android
+
+          # إصلاح تعارض كلاسات Kotlin المكررة في Gradle
+          cat << 'EOF' >> android/build.gradle
+
+          subprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+                  }
+              }
+          }
+          EOF
 
           # الانتقال لمجلد أندرويد وإعطاء الصلاحيات
           cd android
