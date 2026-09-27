@@ -1,91 +1,304 @@
-name: Build Web App to Android APK
+name: Build Android Release APK (Production)
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
+      - master
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. سحب الكود من المستودع
-      - name: Checkout Repository
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      # 2. إعداد بيئة Node.js و Java (JDK 21)
+      - name: Pre-Clean Conflicting Configurations
+        run: |
+          rm -rf capacitor.config.ts capacitor.config.json
+
+      - name: Unzip Project Files
+        run: |
+          if ls *.zip 1> /dev/null 2>&1; then
+            unzip *.zip -d temp_unzip || true
+            TARGET_DIR=$(find temp_unzip -name "package.json" -exec dirname {} \;)
+            if [ -n "$TARGET_DIR" ]; then
+              echo "Found project files in: $TARGET_DIR"
+              cp -r $TARGET_DIR/* .
+            fi
+            rm -rf temp_unzip
+          fi
+
+      - name: Deep Clean Environment
+        run: |
+          rm -rf node_modules package-lock.json dist android
+          find . -name "capacitor.config.ts" -delete
+          find . -name "capacitor.config.json" -delete
+
+      - name: Set up Python for Military Encryption
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Smart Encrypt & Inject Database Credentials
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
+          RAW_TURSO_URL: ${{ secrets.TURSO_URL || '' }}
+          RAW_TURSO_TOKEN: ${{ secrets.TURSO_TOKEN || '' }}
+        run: |
+          python3 -c "
+          import os, sys, re, json
+
+          if sys.stdout.encoding != 'utf-8':
+              try:
+                  sys.stdout.reconfigure(encoding='utf-8')
+              except:
+                  pass
+
+          raw_url = os.environ.get('RAW_TURSO_URL', '').strip()
+          raw_token = os.environ.get('RAW_TURSO_TOKEN', '').strip()
+
+          aldion_path = 'aldion.ts'
+          if not os.path.exists(aldion_path):
+              aldion_path = 'src/aldion.ts'
+
+          if raw_url and raw_token:
+              print('[ENCRYPT] Jari tashfeer al-token wa al-rabit...')
+              url_key = [83, 183, 31, 140, 66, 158, 97, 170, 53, 212]
+              token_key = [155, 77, 226, 26, 119, 60, 245, 134, 41, 161, 100, 216]
+
+              def encrypt_bytes(text, key, salt=7):
+                  return [(ord(c) ^ key[i % len(key)] ^ ((i * salt) & 0xFF)) & 0xFF for i, c in enumerate(text)]
+
+              enc_url_bytes = encrypt_bytes(raw_url, url_key)
+              enc_token_bytes = encrypt_bytes(raw_token, token_key)
+
+              if os.path.exists(aldion_path):
+                  with open(aldion_path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+
+                  content = re.sub(
+                      r'const _CIPHER_TOKEN_BYTES:\s*number\[\]\s*=\s*\[[\s\S]*?\];',
+                      f'const _CIPHER_TOKEN_BYTES: number[] = {json.dumps(enc_token_bytes)};',
+                      content
+                  )
+                  content = re.sub(
+                      r'const _CIPHER_URL_BYTES:\s*number\[\]\s*=\s*\[[\s\S]*?\];',
+                      f'const _CIPHER_URL_BYTES: number[] = {json.dumps(enc_url_bytes)};',
+                      content
+                  )
+                  content = re.sub(r'export const MANUAL_OVERRIDE_TURSO_URL:\s*string\s*=\s*[\"|\'].*?[\"|\'];', 'export const MANUAL_OVERRIDE_TURSO_URL: string = \"\";', content)
+                  content = re.sub(r'export const MANUAL_OVERRIDE_TURSO_TOKEN:\s*string\s*=\s*[\"|\'].*?[\"|\'];', 'export const MANUAL_OVERRIDE_TURSO_TOKEN: string = \"\";', content)
+
+                  with open(aldion_path, 'w', encoding='utf-8') as f:
+                      f.write(content)
+                  print('[SUCCESS] Database credentials encrypted successfully.')
+              else:
+                  print('[WARNING] aldion.ts not found.')
+          else:
+              print('[INFO] Using existing credentials from project files.')
+          "
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Cache Node Modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install Dependencies
+        run: |
+          npm install --force
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Install Native Capacitor Plugins
+        run: |
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/filesystem@latest @capacitor/share@latest @capacitor/splash-screen@latest @capacitor/haptics@latest @capacitor-community/sqlite@latest
+
+      - name: Inject Universal Native Download & Share Interceptor
+        run: |
+          cat << 'EOF' > dist/inject_share.js
+          (function() {
+            const originalCreate = URL.createObjectURL;
+            URL.createObjectURL = function(blob) {
+              const url = originalCreate.call(this, blob);
+              if (blob && (blob.type.includes('json') || blob.type.includes('octet') || blob.type.includes('text'))) {
+                const reader = new FileReader();
+                reader.onloadend = async function() {
+                  if (reader.result) {
+                    const base64Data = reader.result.split(',')[1];
+                    if (base64Data) {
+                      triggerNativeShare(base64Data);
+                    }
+                  }
+                };
+                reader.readAsDataURL(blob);
+              }
+              return url;
+            };
+
+            document.addEventListener('click', function(e) {
+              const anchor = e.target.closest('a[download]');
+              if (anchor && anchor.href && anchor.href.startsWith('data:')) {
+                const parts = anchor.href.split(',');
+                if (parts.length > 1) {
+                  triggerNativeShare(parts[1]);
+                }
+              }
+            }, true);
+
+            async function triggerNativeShare(base64Data) {
+              const dateStr = new Date().toISOString().slice(0, 10);
+              const fileName = `Daftar-Aldeyon-Backup-${dateStr}.json`;
+
+              try {
+                if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem) {
+                  const { Filesystem, Share } = window.Capacitor.Plugins;
+
+                  const savedFile = await Filesystem.writeFile({
+                    path: fileName,
+                    data: base64Data,
+                    directory: 'CACHE'
+                  });
+
+                  await Share.share({
+                    title: 'النسخة الاحتياطية',
+                    text: 'ملف النسخة الاحتياطية - دفتر الديون',
+                    url: savedFile.uri,
+                    dialogTitle: 'حفظ أو مشاركة النسخة الاحتياطية'
+                  });
+                }
+              } catch (err) {
+                console.log('Native Share Failed:', err);
+              }
+            }
+          })();
+          EOF
+
+          if [ -f "dist/index.html" ]; then
+            sed -i '/<\/head>/i \  <script src="./inject_share.js"><\/script>' dist/index.html
+          fi
+
+      - name: Initialize Capacitor Android
+        run: |
+          APP_NAME="دفتر الديون"
+          PACKAGE_ID="com.daftar.aldeyon"
+
+          npx cap init "$APP_NAME" "$PACKAGE_ID" --web-dir=dist
+          npx cap add android
+          npx cap sync android
+
+      - name: Optimize Native Android Manifest & Full Storage Permissions
+        run: |
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            sed -i 's/<application/<application android:hardwareAccelerated="true" android:largeHeap="true" android:usesCleartextTraffic="true"/g' $MANIFEST_PATH
+            sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.VIBRATE" />' $MANIFEST_PATH
+          fi
+
+      - name: Generate Multi-Resolution App Icons
+        run: |
+          python3 -m pip install pillow
+          python3 -c "
+          import os
+          from PIL import Image
+
+          sizes = {
+              'mipmap-mdpi': 48,
+              'mipmap-hdpi': 72,
+              'mipmap-xhdpi': 96,
+              'mipmap-xxhdpi': 144,
+              'mipmap-xxxhdpi': 192
+          }
+
+          icon_path = 'icon.png'
+          if os.path.exists(icon_path):
+              img = Image.open(icon_path).convert('RGBA')
+              res_dir = 'android/app/src/main/res'
+              
+              for folder, size in sizes.items():
+                  target_dir = os.path.join(res_dir, folder)
+                  os.makedirs(target_dir, exist_ok=True)
+                  resized = img.resize((size, size), Image.Resampling.LANCZOS)
+                  
+                  for fname in ['ic_launcher.png', 'ic_launcher_round.png', 'ic_launcher_foreground.png']:
+                      resized.save(os.path.join(target_dir, fname))
+              print('Successfully generated launcher icons!')
+          "
+
+      - name: Update Kotlin & Gradle Versions for Java 21
+        run: |
+          cd android
+          if [ -f "build.gradle" ]; then
+            sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.24"/g' build.gradle
+            sed -i 's/kotlin_version = .*/kotlin_version = "1.9.24"/g' build.gradle
+          fi
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
           distribution: 'zulu'
+          java-version: '21'
 
-      # 3. فك ضغط مشروع الويب
-      - name: Extract Project Zip
+      - name: Cache Gradle Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build and Sign Release APK (Production)
         run: |
-          mkdir -p extracted_project
-          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
-          if [ -n "$ZIP_FILE" ]; then
-            echo "📦 جاري فك ضغط ملف المشروع..."
-            unzip -o "$ZIP_FILE" -d extracted_project
-          else
-            cp -r . extracted_project/ 2>/dev/null || true
-          fi
-
-      # 4. تثبيت الحزم وبناء مشروع الويب
-      - name: Install Dependencies & Build Web Project
-        run: |
-          cd extracted_project
-          npm install
-          npm run build || npx vite build
-
-      # 5. إعداد أندرويد وبناء ملف APK غير موقع ثم توقيعه بمفتاح جديد
-      - name: Setup Android Platform & Build APK
-        run: |
-          cd extracted_project
-          
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "DebtTracker" "com.aistudio.debttracker" --web-dir dist || true
-          npx cap add android || true
-          npx cap sync android
-
-          # حل تعارض مكتبات Kotlin
-          cat << 'EOF' >> android/build.gradle
-
-          subprojects {
-              configurations.all {
-                  resolutionStrategy {
-                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
-                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
-                  }
-              }
-          }
-          EOF
-
-          # إنشاء مفتاح توقيع جديد بكلمة سر معروفة
-          keytool -genkey -v -keystore auto_generated.keystore -storepass android -alias key0 -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android, OU=Dev, O=App, L=City, S=State, C=US"
-
           cd android
           chmod +x gradlew
+          
+          # إنشاء مفتاح توقيع التطبيق Keystore
+          keytool -genkey -v -keystore release.keystore -alias daftar_key -keyalg RSA -keysize 2048 -validity 10000 -storepass "DaftarReleasePass123" -keypass "DaftarReleasePass123" -dname "CN=DaftarAldeyon, OU=Production, O=Daftar, L=Basra, S=Basra, C=IQ" || true
 
-          # البناء مع التوقيع بالمفتاح الجديد
-          ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$(pwd)/../auto_generated.keystore \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=key0 \
-            -Pandroid.injected.signing.key.password=android \
-            --no-daemon
+          # بناء حزمة Release
+          ./gradlew assembleRelease --no-daemon -Dorg.gradle.project.android.useAndroidX=true
 
-      # 6. رفع ملف الـ APK
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android Build Tools: $BUILD_TOOLS_DIR"
+          
+          RELEASE_DIR="app/build/outputs/apk/release"
+          TARGET_APK=$(find "$RELEASE_DIR" -name "*.apk" | head -n 1)
+          
+          if [ -f "$TARGET_APK" ]; then
+            echo "Found APK: $TARGET_APK"
+            DATE_STR=$(date +'%Y-%m-%d')
+            SIGNED_APK="$RELEASE_DIR/Daftar-Aldeyon-Release-${DATE_STR}.apk"
+            
+            # محاذاة الملف Zipalign وتوقيعه رقمياً بـ apksigner
+            if [ -f "$BUILD_TOOLS_DIR/zipalign" ]; then
+              $BUILD_TOOLS_DIR/zipalign -v -p 4 "$TARGET_APK" "$RELEASE_DIR/aligned.apk" || cp "$TARGET_APK" "$RELEASE_DIR/aligned.apk"
+              $BUILD_TOOLS_DIR/apksigner sign --ks release.keystore --ks-pass pass:"DaftarReleasePass123" --key-pass pass:"DaftarReleasePass123" --out "$SIGNED_APK" "$RELEASE_DIR/aligned.apk"
+            else
+              $BUILD_TOOLS_DIR/apksigner sign --ks release.keystore --ks-pass pass:"DaftarReleasePass123" --key-pass pass:"DaftarReleasePass123" --out "$SIGNED_APK" "$TARGET_APK"
+            fi
+            
+            echo "Release APK created successfully at: $SIGNED_APK"
+          else
+            echo "Error: Release APK was not found in $RELEASE_DIR"
+            exit 1
+          fi
+
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: DebtTracker-Release-APK
-          path: "extracted_project/android/app/build/outputs/apk/release/*.apk"
+          name: Daftar-Aldeyon-Release-APK
+          path: android/app/build/outputs/apk/release/Daftar-Aldeyon-Release-*.apk
